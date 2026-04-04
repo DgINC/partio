@@ -1,7 +1,9 @@
 # PARTIO
 
 ### ***PARTIO*** is a component of the "***NOX***" project, a fundamental rethinking and research initiative aimed at optimizing configuration and build systems. It serves as a specialized interpreter for the ***YACS*** (Yet Another Configuration System) DSL.
---------------------------------------------------------------------------
+---
+### Warning! This project is under active development. Bugs and broken code are possible before the release.
+---
 
 **Key Advantages**
 * Guaranteed Determinism: The system describes a precise, immutable task graph where the configuration block remains the single source of truth.
