@@ -1,5 +1,5 @@
-# Created by https://www.toptal.com/developers/gitignore/api/c++,clion
-# Edit at https://www.toptal.com/developers/gitignore?templates=c++,clion
+# Created by https://www.toptal.com/developers/gitignore/api/cmake,clion+all,c++
+# Edit at https://www.toptal.com/developers/gitignore?templates=cmake,clion+all,c++
 
 ### C++ ###
 # Prerequisites
@@ -35,7 +35,7 @@
 *.out
 *.app
 
-### CLion ###
+### CLion+all ###
 # Covers JetBrains IDEs: IntelliJ, RubyMine, PhpStorm, AppCode, PyCharm, CLion, Android Studio, WebStorm and Rider
 # Reference: https://intellij-support.jetbrains.com/hc/en-us/articles/206544839
 
@@ -114,38 +114,34 @@ fabric.properties
 # Android studio 3.1+ serialized cache file
 .idea/caches/build_file_checksums.ser
 
-### CLion Patch ###
-# Comment Reason: https://github.com/joeblau/gitignore.io/issues/186#issuecomment-215987721
+### CLion+all Patch ###
+# Ignore everything but code style settings and run configurations
+# that are supposed to be shared within teams.
 
-# *.iml
-# modules.xml
-# .idea/misc.xml
-# *.ipr
+.idea/*
 
-# Sonarlint plugin
-# https://plugins.jetbrains.com/plugin/7973-sonarlint
-.idea/**/sonarlint/
+!.idea/codeStyles
+!.idea/runConfigurations
 
-# SonarQube Plugin
-# https://plugins.jetbrains.com/plugin/7238-sonarqube-community-plugin
-.idea/**/sonarIssues.xml
+### CMake ###
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles
+CMakeScripts
+Testing
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps
 
-# Markdown Navigator plugin
-# https://plugins.jetbrains.com/plugin/7896-markdown-navigator-enhanced
-.idea/**/markdown-navigator.xml
-.idea/**/markdown-navigator-enh.xml
-.idea/**/markdown-navigator/
+### CMake Patch ###
+CMakeUserPresets.json
 
-# Cache file creation bug
-# See https://youtrack.jetbrains.com/issue/JBR-2257
-.idea/$CACHE_FILE$
+# External projects
+*-prefix/
 
-# CodeStream plugin
-# https://plugins.jetbrains.com/plugin/12206-codestream
-.idea/codestream.xml
+# End of https://www.toptal.com/developers/gitignore/api/cmake,clion+all,c++
 
-# Azure Toolkit for IntelliJ plugin
-# https://plugins.jetbrains.com/plugin/8053-azure-toolkit-for-intellij
-.idea/**/azureSettings.xml
-
-# End of https://www.toptal.com/developers/gitignore/api/c++,clion
+gen/
