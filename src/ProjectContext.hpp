@@ -12,6 +12,20 @@
 #include "YACSLexer.h"
 #include "YACSParser.h"
 
+enum class TargetArchitecture : std::uint8_t {
+    X86 = 0,
+    X86_64 = 1,
+    ARM = 2,
+    ARM64 = 3,
+};
+
+static const std::map<std::string, TargetArchitecture> TargetArchitectures = {
+    {"x86", TargetArchitecture::X86},
+    {"x86_64", TargetArchitecture::X86_64},
+    {"arm", TargetArchitecture::ARM},
+    {"arm64", TargetArchitecture::ARM64},
+};
+
 struct Parameter {
     std::string type;
     std::string name;
@@ -78,7 +92,6 @@ public:
 
     bool is_defined = false;
     bool async = false;
-    std::vector<std::string> dependencies;
 
     TargetPropertyProxy operator[](const std::string& key) {
         return TargetPropertyProxy{*this, key};
@@ -173,7 +186,7 @@ inline void Target::handle_type_assignment(const Value &val) {
         if (const auto it = TargetTypeMap.find(*str_ptr); it != TargetTypeMap.end()) {
             type = it->second;
         } else {
-            throw std::runtime_error("ОШИБКА: Неизвестный тип таргета: '" + *str_ptr + "'");
+            throw std::runtime_error("Unknown target type: '" + *str_ptr + "'");
         }
     }
     // 2. Если значение уже является типом TargetType (внутренняя передача)
@@ -182,7 +195,7 @@ inline void Target::handle_type_assignment(const Value &val) {
     }
     // 3. Защита от дурака (если передали число или список)
     else {
-        throw std::runtime_error("ОШИБКА: Свойство 'type' должно быть строкой (например, \"executable\")!");
+        throw std::runtime_error("The 'type' property must be a string (e.g. \"executable\")!");
     }
 }
 
@@ -195,12 +208,21 @@ struct ParsedFile {
     std::unique_ptr<YACSParser> parser;
 };
 
+struct ProjectData {
+    TargetArchitecture architecture;
+    std::map<std::string, std::shared_ptr<Target>> targets;
+    std::map<std::string, std::queue<std::shared_ptr<Target>>> execution_plan;
+};
+
 class ProjectContext {
 public:
+    std::shared_ptr<ProjectData> project_data;
     std::filesystem::path root;
-    ValueMap globals; // Тут лежат $version, $source_files и т.д.
-    std::map<std::string, std::shared_ptr<Target>> targets; // Тут храним все наши цели
+    ValueMap globals;
+    //std::map<std::string, std::shared_ptr<Target>> targets; // Тут храним все наши цели
     FunctionMap functions;
     std::vector<std::shared_ptr<ParsedFile>> ast_cache;
-    std::queue<std::shared_ptr<Target>> execution_plan;
+    //std::queue<std::shared_ptr<Target>> execution_plan;
 };
+
+

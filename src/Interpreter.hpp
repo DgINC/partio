@@ -28,7 +28,7 @@ BuiltinFunc wrap_builtin(F&& func) {
 
         if constexpr (std::is_void_v<RetType>) {
             f(args);
-            return Value(); // Возвращаем наш "null" (std::monostate)
+            return {}; // Возвращаем наш "null" (std::monostate)
         } else {
             return f(args);
         }
@@ -39,8 +39,6 @@ class Interpreter : public YACSParserBaseVisitor {
 public:
 
     std::any visitFor_stmt(YACSParser::For_stmtContext *ctx) override;
-
-    std::any visitExec_stmt(YACSParser::Exec_stmtContext *ctx) override;
 
     std::any visitIndexAccess(YACSParser::IndexAccessContext *ctx) override;
 
@@ -102,27 +100,29 @@ public:
     }
 
 private:
-    ProjectConfig _config;
-    std::shared_ptr<ProjectContext> project;
+    std::shared_ptr<ProjectConfig> _config;
+    std::shared_ptr<ProjectContext> project_ctx;
     std::shared_ptr<Target> currentTarget = nullptr;
     std::string currentNamespace; // Пусто по умолчанию (глобальная область)
     std::vector<std::map<std::string, Value>> scopes;
     std::map<std::string, BuiltinFunc> builtins;
     std::string current_target_name{};
 public:
-    explicit Interpreter(const ProjectConfig& config, std::shared_ptr<ProjectContext> ctx);
+    explicit Interpreter(const std::shared_ptr<ProjectConfig>& config, const std::shared_ptr<ProjectData>& _project_data);
     Interpreter(const Interpreter&) = delete;            // Удаляем копирование
     Interpreter& operator=(const Interpreter&) = delete; // Удаляем присваивание
 
     Interpreter(Interpreter&&) = default;                // Оставляем перемещение
     Interpreter& operator=(Interpreter&&) = default;
 
+    void set_project_ctx(std::shared_ptr<ProjectContext> project_ctx);
+
     std::any visitArg_list(YACSParser::Arg_listContext *ctx) override;
 
     std::any visitQualified_id(YACSParser::Qualified_idContext *ctx) override;
 
     std::any visitStringLiteral(YACSParser::StringLiteralContext *ctx) override {
-        std::string result = "";
+        std::string result{};
 
         for (const auto* literal = ctx->string_literal(); auto* child : literal->children) {
             // 1. Если это текстовый токен или эскейп-последовательность
@@ -227,11 +227,11 @@ public:
     std::any visitTarget_block(YACSParser::Target_blockContext *ctx) override {
         const std::string name = ctx->IDENTIFIER()->getText();
 
-        const auto& targetPtr = project->targets.at(name);
+        const auto& targetPtr = project_ctx->project_data->targets.at(name);
 
         // 2. Проверяем, не пытаемся ли мы описать один и тот же таргет второй раз
         if (targetPtr->is_defined) {
-            throw std::runtime_error("ОШИБКА: Цель '" + name + "' описана в коде более одного раза!");
+            throw std::runtime_error("The target '" + name + "' is described more than once!");
         }
 
         // 3. Помечаем, что теперь этот таргет "в работе" (наполняется данными)
@@ -303,8 +303,6 @@ public:
         // Достаем значение из нашего ScopeStack
         Value& val = getVar(name);
 
-        std::cout << "[DEBUG] Reading var: $" << name << " = " << val.to_string() << std::endl;
-
         return std::make_any<Value>(val);
     }
 
@@ -325,13 +323,15 @@ public:
             // Пытаемся найти, что скрывается за префиксом
 
             // Если префикс — это другой проект (результат fetch)
-            if (const Value prefixVal = resolveVariable(prefix); prefixVal.is_project()) {
+            if (const Value prefixVal = resolveVariable(prefix); prefixVal.is<std::shared_ptr<ProjectContext>>()) {
                 // Проверяем, есть ли такой таргет в том проекте
-                if (const auto subProject = prefixVal.as_project(); subProject->targets.contains(target)) {
+                const auto& subProject = prefixVal.as<std::shared_ptr<ProjectContext>>();
+                if ( subProject->project_data->targets.contains(target)) {
                     // Возвращаем полное имя "префикс:цель"
-                    return std::make_any<Value>(prefix + ":" + target);
+                    const auto res = subProject->project_data->targets.at(target);
+                    return std::make_any<Value>(res);
                 }
-                throw std::runtime_error("ОШИБКА: В проекте '" + prefix + "' не найден таргет '" + target + "'!");
+                throw std::runtime_error("Target '" + target + "' not found in project '" + prefix + "'!");
             }
 
             // Если это не проект, возможно это просто переменная с двоеточием в имени
@@ -339,25 +339,24 @@ public:
             return std::make_any<Value>(resolveVariable(ctx->qualified_id()->getText()));
         }
 
-        throw std::runtime_error("ОШИБКА: Слишком сложный путь (больше одного ':'): " + ctx->qualified_id()->getText());
+        throw std::runtime_error("Path too complex (more than one ':'):" + ctx->qualified_id()->getText());
     }
 
     std::any visitFunctionCall(YACSParser::FunctionCallContext *ctx) override;
 
     Value evaluateExpression(const std::string &expression);
 
-    bool hasCycles() const;
+    [[nodiscard]] bool hasCycles() const;
+
+    void buildExecutionPlans() const;
 
     Value resolveVariable(const std::string& name) {
-        // 1. Формируем список имен для поиска (сначала полное имя с неймспейсом, потом обычное)
         std::vector<std::string> candidates;
         if (name.find(':') == std::string::npos && !currentNamespace.empty()) {
             candidates.push_back(currentNamespace + ":" + name);
         }
         candidates.push_back(name);
 
-        // 2. Ищем в локальных scopes (от ближайшего к глобальному)
-        // Используем reverse_view для обхода стека сверху вниз
         for (auto const& scope : std::views::reverse(scopes)) {
             for (const auto& candidate : candidates) {
                 if (scope.contains(candidate)) {
@@ -366,23 +365,19 @@ public:
             }
         }
 
-        // 3. Ищем в глобальных переменных проекта (константы типа 'executable', 'fetch' и т.д.)
         for (const auto& candidate : candidates) {
-            if (project->globals.contains(candidate)) {
-                return project->globals.at(candidate);
+            if (project_ctx->globals.contains(candidate)) {
+                return project_ctx->globals.at(candidate);
             }
         }
 
-        // 4. Ищем в таргетах (благодаря пре-скану они там уже есть)
         for (const auto& candidate : candidates) {
-            if (project->targets.contains(candidate)) {
-                // Возвращаем имя таргета как строку.
-                // Это позволит писать: depends = [example2]
-                return Value(candidate);
+            if (project_ctx->project_data->targets.contains(candidate)) {
+                const auto res = project_ctx->project_data->targets.at(candidate);
+                return Value(res);
             }
         }
 
-        // Если мы дошли сюда — значит, реально ничего не нашли
-        throw std::runtime_error("ОШИБКА: Идентификатор '" + name + "' не найден ни в переменных, ни в целях!");
+        throw std::runtime_error("Identifier '" + name + "' was not found in either variables or targets!");
     }
 };

@@ -13,6 +13,10 @@ std::regex patternToRegex(const std::string& pattern) {
     return std::regex(r, std::regex_constants::ECMAScript | std::regex_constants::icase);
 }
 
+void Interpreter::set_project_ctx(std::shared_ptr<ProjectContext> _project_ctx) {
+    project_ctx = std::move(_project_ctx);
+}
+
 std::any Interpreter::visitArg_list(YACSParser::Arg_listContext *ctx) {
     std::vector<Value> parameters;
 
@@ -41,19 +45,15 @@ std::any Interpreter::visitArg_list(YACSParser::Arg_listContext *ctx) {
 
 std::any Interpreter::visitQualified_id(YACSParser::Qualified_idContext *ctx) {
     std::string result; // Создаем явный объект
+
     const auto ids = ctx->IDENTIFIER();
     for (size_t i = 0; i < ids.size(); ++i) {
         result += ids[i]->getText();
         if (i + 1 < ids.size()) result += ":";
     }
-    std::cout << "[ОТЛАДКА 1] Строка склеена: " << result << std::endl;
 
     Value test_val(result);
-    std::cout << "[ОТЛАДКА 2] Объект Value создан" << std::endl;
-
     antlrcpp::Any any_val = test_val;
-    std::cout << "[ОТЛАДКА 3] Объект упакован для возврата" << std::endl;
-
     return any_val;
 }
 
@@ -86,13 +86,13 @@ std::any Interpreter::visitFor_stmt(YACSParser::For_stmtContext *ctx) {
     };
 
     try {
-        if (container.is_list()) {
-            const auto& list = container.as_list();
+        if (container.is<ValueList>()) {
+            const auto& list = container.as<ValueList>();
             for (size_t i = 0; i < list.size(); ++i) {
                 executeBody(Value(static_cast<int>(i)), list[i]);
             }
-        } else if (container.is_map()) {
-            for (auto const& [k, v] : container.as_map()) {
+        } else if (container.is<ValueMap>()) {
+            for (auto const& [k, v] : container.as<ValueMap>()) {
                 executeBody(Value(k), v);
             }
         }
@@ -102,46 +102,29 @@ std::any Interpreter::visitFor_stmt(YACSParser::For_stmtContext *ctx) {
     return {};
 }
 
-std::any Interpreter::visitExec_stmt(YACSParser::Exec_stmtContext *ctx) {
-    const std::string targetName = ctx->qualified_id()->getText();
-
-    if (!project->targets.contains(targetName)) {
-        throw std::runtime_error("Undefined target reference: " + targetName);
-    }
-
-    // Если мы вызвали exec внутри таргета, записываем зависимость
-    if (!current_target_name.empty()) {
-        project->targets.at(current_target_name)->dependencies.push_back(targetName);
-    }
-
-    project->execution_plan.push(project->targets.at(targetName));
-    return {};
-}
-
 std::any Interpreter::visitIndexAccess(YACSParser::IndexAccessContext *ctx) {
     auto container = std::any_cast<Value>(visit(ctx->expr(0)));
     auto index = std::any_cast<Value>(visit(ctx->expr(1)));
 
-    if (container.is_map()) {
-        return container.as_map().at(index.to_string());
+    if (container.is<ValueMap>()) {
+        return container.as<ValueMap>().at(index.to_string());
     }
-    if (container.is_list()) {
-        return container.as_list().at(index.as_int());
+    if (container.is<ValueList>()) {
+        return container.as<ValueList>().at(index.as<int>());
     }
-    throw std::runtime_error("Попытка индексации того, что не является контейнером");
+    throw std::runtime_error("Trying to index something that is not a container");
 }
 
 std::any Interpreter::visitProject_file(YACSParser::Project_fileContext *ctx) {
-    // 1. ПРЕ-СКАН: Регистрируем все таргеты как "обещания"
     for (const auto block : ctx->project_block()) {
         if (!block->project_body()) continue;
 
         for (auto* child : block->project_body()->children) {
             if (auto* t_ctx = dynamic_cast<YACSParser::Target_blockContext*>(child)) {
                 // Если его нет — создаем пустой объект
-                if (std::string name = t_ctx->IDENTIFIER()->getText(); !project->targets.contains(name)) {
+                if (std::string name = t_ctx->IDENTIFIER()->getText(); !project_ctx->project_data->targets.contains(name)) {
                     auto ptr = std::make_shared<Target>(name);
-                    project->targets.try_emplace(name, std::move(ptr));
+                    project_ctx->project_data->targets.try_emplace(name, std::move(ptr));
                 }
             }
         }
@@ -153,7 +136,8 @@ std::any Interpreter::visitProject_file(YACSParser::Project_fileContext *ctx) {
         throw std::runtime_error("Build aborted due to circular dependencies.");
     }
 
-    // 2. Основной проход
+    buildExecutionPlans();
+
     return result;
 }
 
@@ -163,14 +147,15 @@ std::any Interpreter::visitImport_stmt(YACSParser::Import_stmtContext *ctx) {
                         ? ctx->IDENTIFIER(1)->getText()
                         : ctx->IDENTIFIER(0)->getText();
 
-    std::filesystem::path importPath = project->root / fileName;
+    std::filesystem::path importPath = project_ctx->root / fileName;
 
     if (!std::filesystem::exists(importPath)) {
         throw std::runtime_error("File not found: " + importPath.string());
     }
 
     const auto importContext = std::make_shared<ProjectContext>();
-    importContext->root = project->root;
+    importContext->root = project_ctx->root;
+    importContext->project_data = project_ctx->project_data;
 
     // Создаем хранилище
     const auto ast = std::make_shared<ParsedFile>();
@@ -184,11 +169,12 @@ std::any Interpreter::visitImport_stmt(YACSParser::Import_stmtContext *ctx) {
     importContext->ast_cache.push_back(ast);
 
     // Выполняем
-    Interpreter importInterpreter(_config, importContext);
+    Interpreter importInterpreter(_config, project_ctx->project_data);
+    importInterpreter.set_project_ctx(importContext);
     importInterpreter.visit(ast->parser->project_file());
 
     // Регистрируем проект в текущем проекте
-    project->globals[alias] = Value(importContext);
+    project_ctx->globals[alias] = Value(importContext);
 
     return nullptr;
 }
@@ -216,7 +202,7 @@ std::any Interpreter::visitAdditiveExpr(YACSParser::AdditiveExprContext *ctx) {
     }
     // Для "-" можно добавить логику удаления элементов из списка или вычитания чисел
 
-    throw std::runtime_error("ОШИБКА: Несовместимые типы для операции '");
+    throw std::runtime_error("Incompatible types for operation '");
 }
 
 std::any Interpreter::visitReturn_stmt(YACSParser::Return_stmtContext *ctx) {
@@ -246,11 +232,8 @@ std::any Interpreter::visitFunction_def(YACSParser::Function_defContext *ctx) {
         }
     }
 
-    project->functions[name] = func; // Регистрируем в глобальной таблице
-    std::cout << "[DEBUG] Зарегистрирована функция: " << name
-              << " с " << func.params.size() << " параметрами." << std::endl;
-
-    return nullptr; // Просто зарегистрировали, ничего не возвращаем
+    project_ctx->functions[name] = func;
+    return nullptr;
 }
 
 std::any Interpreter::visitNamespace_block(YACSParser::Namespace_blockContext *ctx) {
@@ -266,15 +249,8 @@ std::any Interpreter::visitNamespace_block(YACSParser::Namespace_blockContext *c
         currentNamespace += ":" + nsName;
     }
 
-    std::cout << "[DEBUG] Входим в namespace: " << currentNamespace << std::endl;
-
-    // Посещаем всё, что внутри: функции и переменные
-    // В твоей грамматике это: (function_def | variable_decl)*
     visitChildren(ctx);
 
-    std::cout << "[DEBUG] Выходим из namespace: " << currentNamespace << std::endl;
-
-    // Восстанавливаем состояние
     currentNamespace = oldNamespace;
 
     return nullptr;
@@ -308,7 +284,7 @@ std::any Interpreter::visitComparisonExpr(YACSParser::ComparisonExprContext *ctx
             else if (ctx->LESS_THAN_OR_EQUAL_TO())  result = l <= r;
             else if (ctx->GREATER_THAN_OR_EQUAL_TO()) result = l >= r;
         } else {
-            throw std::runtime_error("ОШИБКА: Операторы сравнения (кроме == и !=) применимы только к числам.");
+            throw std::runtime_error("Comparison operators (except == and !=) apply only to numbers.");
         }
     }
 
@@ -325,7 +301,7 @@ std::any Interpreter::visitIf_stmt(YACSParser::If_stmtContext *ctx) {
         condition = std::get<bool>(condVal.data);
     } else {
         // Если в условии не bool (например, if ("строка")), кидаем ошибку
-        throw std::runtime_error("ОШИБКА: Условие в 'if' должно иметь логический тип (bool)!");
+        throw std::runtime_error("The condition in 'if' must be of logical type (bool)!");
     }
 
     // 3. Умный обход дочерних элементов (чтобы отделить if-блок от else-блока)
@@ -365,31 +341,26 @@ std::any Interpreter::visitIf_stmt(YACSParser::If_stmtContext *ctx) {
 }
 
 std::any Interpreter::visitBoolLiteral(YACSParser::BoolLiteralContext *ctx) {
-    // Получаем текст узла: "true" или "false"
     const std::string text = ctx->getText();
 
-    // Превращаем строку в логическое значение
     const bool boolValue = text == "true";
 
-    // Выводим отладку (по желанию, потом можно убрать)
-    std::cout << "[DEBUG] Булев литерал: " << (boolValue ? "true" : "false") << std::endl;
-
-    // Упаковываем в Value и возвращаем как std::any
     return std::make_any<Value>(Value(boolValue));
 }
 
-Interpreter::Interpreter(const ProjectConfig& config, std::shared_ptr<ProjectContext> ctx) :
-        _config(config),
-        project(std::move(ctx)) {
+Interpreter::Interpreter(const std::shared_ptr<ProjectConfig>& config, const std::shared_ptr<ProjectData>& _project_data) :
+        _config(config) {
 
-    project->globals["ARCH"] = Value(config.arch);
-    project->globals["MODE"] = Value(config.build_mode);
+    project_ctx = std::make_shared<ProjectContext>();
+    project_ctx->project_data = _project_data;
+    project_ctx->globals["ARCH"] = Value(config->arch);
+    project_ctx->globals["MODE"] = Value(config->build_mode);
 
-    project->globals["executable"] = Value(TargetType::Executable);
-    project->globals["library"]    = Value(TargetType::Library);
-    project->globals["sources"]    = Value(TargetType::Sources);
-    project->globals["generator"]  = Value(TargetType::Generator);
-    project->globals["dumb"]       = Value(TargetType::Dumb);
+    project_ctx->globals["executable"] = Value(TargetType::Executable);
+    project_ctx->globals["library"]    = Value(TargetType::Library);
+    project_ctx->globals["sources"]    = Value(TargetType::Sources);
+    project_ctx->globals["generator"]  = Value(TargetType::Generator);
+    project_ctx->globals["dumb"]       = Value(TargetType::Dumb);
 
     scopes.emplace_back();
 
@@ -413,7 +384,7 @@ Interpreter::Interpreter(const ProjectConfig& config, std::shared_ptr<ProjectCon
         if (it == args.end()) it = args.find("0");
 
         if (it == args.end()) {
-            throw std::runtime_error("В print() не передана строка (нужен позиционный аргумент или 'text=...') ");
+            throw std::runtime_error("No string passed to print() (needs a positional argument or 'text=...')");
         }
 
         const std::string cmd = it->second.to_string();
@@ -430,10 +401,10 @@ Interpreter::Interpreter(const ProjectConfig& config, std::shared_ptr<ProjectCon
         if (args.contains("patterns")) val = args.at("patterns");
         else if (args.contains("0")) val = args.at("0");
 
-        if (val.is_list()) {
-            for (const auto& item : std::get<ValueList>(val.data)) patterns.push_back(item.as_string());
-        } else if (val.is_string()) {
-            patterns.push_back(val.as_string());
+        if (val.is<ValueList>()) {
+            for (const auto& item : std::get<ValueList>(val.data)) patterns.push_back(item.as<std::string>());
+        } else if (val.is<std::string>()) {
+            patterns.push_back(val.as<std::string>());
         }
 
         // 2. Сканируем
@@ -456,7 +427,7 @@ Interpreter::Interpreter(const ProjectConfig& config, std::shared_ptr<ProjectCon
 
         // 3. Сортировка для детерминизма
         std::ranges::sort(results, [](const Value& a, const Value& b) {
-            return a.as_string() < b.as_string();
+            return a.as<std::string>() < b.as<std::string>();
         });
 
         return Value(results);
@@ -467,9 +438,9 @@ Interpreter::Interpreter(const ProjectConfig& config, std::shared_ptr<ProjectCon
             throw std::runtime_error("fetch(): 'url' is required");
         }
 
-        std::string url = args.at("url").as_string();
-        std::string version = args.contains("version") ? args.at("version").as_string() : "";
-        std::string sources_dir = args.contains("sources_dir") ? args.at("sources_dir").as_string() : "";
+        auto url = args.at("url").as<std::string>();
+        std::string version = args.contains("version") ? args.at("version").as<std::string>() : "";
+        std::string sources_dir = args.contains("sources_dir") ? args.at("sources_dir").as<std::string>() : "";
 
         std::filesystem::path final_path;
 
@@ -477,7 +448,7 @@ Interpreter::Interpreter(const ProjectConfig& config, std::shared_ptr<ProjectCon
 
         if (url.find("://") != std::string::npos || url.find("git@") == 0) {
             // Логика для удаленного репозитория
-            std::string name = args.contains("name") ? args.at("name").as_string() : "";
+            std::string name = args.contains("name") ? args.at("name").as<std::string>() : "";
             if (name.empty()) {
                 name = url.substr(url.find_last_of('/') + 1);
                 if (name.ends_with(".git")) name.erase(name.size() - 4);
@@ -511,6 +482,7 @@ Interpreter::Interpreter(const ProjectConfig& config, std::shared_ptr<ProjectCon
         // 3. Создаем контекст модуля
         auto moduleContext = std::make_shared<ProjectContext>();
         moduleContext->root = project_root; // Запоминаем корень!
+        moduleContext->project_data = project_ctx->project_data;
 
         // 4. Ищем и запускаем build.yacs внутри этого модуля
         if (std::filesystem::path build_file = project_root / "build.yacs"; std::filesystem::exists(build_file)) {
@@ -522,7 +494,8 @@ Interpreter::Interpreter(const ProjectConfig& config, std::shared_ptr<ProjectCon
 
             // Рекурсивно запускаем интерпретатор для подпроекта
             // Важно: передаем новый moduleContext как основной проект для той копии
-            Interpreter subInterpreter(_config, moduleContext);
+            Interpreter subInterpreter(_config, project_ctx->project_data);
+            subInterpreter.set_project_ctx(moduleContext);
             subInterpreter.visit(parser.project_file());
         }
 
@@ -603,20 +576,20 @@ antlrcpp::Any Interpreter::visitFunctionCall(YACSParser::FunctionCallContext *ct
 
     // --- 2. РЕЗОЛВИНГ ФУНКЦИИ И КОНТЕКСТА ---
     Function* targetFunc = nullptr;
-    std::shared_ptr<ProjectContext> targetProjectScope = project;
+    std::shared_ptr<ProjectContext> targetProjectScope = project_ctx;
 
     if (idents.size() == 1) {
         std::string name = idents[0]->getText();
         if (builtins.contains(name)) return std::make_any<Value>(builtins[name](finalArgs));
-        if (project->functions.contains(name)) targetFunc = &project->functions[name];
+        if (project_ctx->functions.contains(name)) targetFunc = &project_ctx->functions[name];
     }
     else {
         // Случай lib:foo:bar или lib:bar
         std::string first = idents[0]->getText();
 
         try {
-            if (Value base = resolveVariable(first); base.is_project()) {
-                targetProjectScope = base.as_project();
+            if (Value base = resolveVariable(first); base.is<std::shared_ptr<ProjectContext>>()) {
+                targetProjectScope = base.as<std::shared_ptr<ProjectContext>>();
 
                 // Склеиваем ВЕСЬ остаток в одну строку через двоеточие
                 // Если вызвали lib:foo:bar, то tail будет "foo:bar"
@@ -632,18 +605,18 @@ antlrcpp::Any Interpreter::visitFunctionCall(YACSParser::FunctionCallContext *ct
             }
         } catch (...) {
             // Если через resolveVariable не нашли, пробуем полное имя в текущем проекте
-            if (project->functions.contains(fullName)) {
-                targetFunc = &project->functions[fullName];
-                targetProjectScope = project;
+            if (project_ctx->functions.contains(fullName)) {
+                targetFunc = &project_ctx->functions[fullName];
+                targetProjectScope = project_ctx;
             }
         }
     }
 
     // Если путь не сработал, ищем "плоское" имя в текущем контексте
     if (!targetFunc) {
-        if (project->functions.contains(fullName)) {
-            targetFunc = &project->functions[fullName];
-            targetProjectScope = project;
+        if (project_ctx->functions.contains(fullName)) {
+            targetFunc = &project_ctx->functions[fullName];
+            targetProjectScope = project_ctx;
         }
     }
 
@@ -677,10 +650,10 @@ antlrcpp::Any Interpreter::visitFunctionCall(YACSParser::FunctionCallContext *ct
 
         // Проверка типов
         bool typeMatch = false;
-        if (expectedType == "string" && argVal.is_string()) typeMatch = true;
-        else if (expectedType == "list" && argVal.is_list()) typeMatch = true;
-        else if (expectedType == "int" && std::holds_alternative<int>(argVal.data)) typeMatch = true;
-        else if (expectedType == "bool" && std::holds_alternative<bool>(argVal.data)) typeMatch = true;
+        if (expectedType == "string" && argVal.is<std::string>()) typeMatch = true;
+        else if (expectedType == "list" && argVal.is<ValueList>()) typeMatch = true;
+        else if (expectedType == "int" && argVal.is<int>()) typeMatch = true;
+        else if (expectedType == "bool" && argVal.is<bool>()) typeMatch = true;
         else if (expectedType == "auto" || expectedType == "any") typeMatch = true;
 
         if (!typeMatch) {
@@ -692,10 +665,10 @@ antlrcpp::Any Interpreter::visitFunctionCall(YACSParser::FunctionCallContext *ct
     }
 
     // --- 4. ВЫПОЛНЕНИЕ С ПРАВИЛЬНЫМ КОНТЕКСТОМ ---
-    std::shared_ptr<ProjectContext> oldProject = project;
+    std::shared_ptr<ProjectContext> oldProject = project_ctx;
     std::string oldNamespace = currentNamespace;
 
-    project = targetProjectScope;
+    project_ctx = targetProjectScope;
     // Определяем неймспейс функции (например, из "lib:foo:bar" получаем "lib:foo")
     if (name.find(':') != std::string::npos) {
         currentNamespace = name.substr(0, name.find_last_of(':'));
@@ -746,7 +719,7 @@ antlrcpp::Any Interpreter::visitFunctionCall(YACSParser::FunctionCallContext *ct
     // --- 4. ВОЗВРАТ КОНТЕКСТА ---
     scopes.pop_back();
     currentNamespace = oldNamespace;
-    project = oldProject;
+    project_ctx = oldProject;
 
     return result;
 }
@@ -773,48 +746,90 @@ Value Interpreter::evaluateExpression(const std::string& expression) {
 
 bool Interpreter::hasCycles() const {
     // Состояния: 0 = не были, 1 = в процессе (в стеке), 2 = всё проверено
-    std::unordered_map<std::string, int> state;
-    const auto& targetsMap = project->targets;
-    for (const auto &name: targetsMap | std::views::keys) {
-        state[name] = 0;
+    // В качестве ключа используем сырой указатель (Target*), так как он уникален
+    std::unordered_map<Target*, int> state;
+    const auto& targetsMap = project_ctx->project_data->targets;
+
+    // Заполняем начальные состояния
+    for (const auto& target_ptr : targetsMap | std::views::values) {
+        state[target_ptr.get()] = 0;
     }
 
     // Лямбда для рекурсивного обхода (DFS)
-    auto dfs = [&](this auto& self, const std::string& node, std::vector<std::string>& path) -> bool {
-        state[node] = 1; // Зашли
+    // path теперь хранит shared_ptr, чтобы в случае ошибки вытащить имена
+    auto dfs = [&](this auto& self, const std::shared_ptr<Target>& node, std::vector<std::shared_ptr<Target>>& path) -> bool {
+        Target* raw_ptr = node.get();
+        state[raw_ptr] = 1; // Зашли (пометили как "в обработке")
         path.push_back(node);
 
-        // Проверяем всех, кого вызывает этот таргет
-        for (const std::string& dep : targetsMap.at(node)->dependencies) {
-            if (state[dep] == 1) {
-                // БИНГО! Нашли цикл.
-                path.push_back(dep);
+        // Теперь итерируемся по ValueList depends
+        for (const auto& dep_val : node->depends) {
+            // Проверяем, что в Value реально лежит таргет
+            if (!dep_val.is<std::shared_ptr<Target>>()) {
+                continue;
+            }
+
+            auto dep_ptr = dep_val.as<std::shared_ptr<Target>>();
+            Target* raw_dep_ptr = dep_ptr.get();
+
+            // Если таргет уже в стеке текущего обхода — мы нашли цикл
+            if (state[raw_dep_ptr] == 1) {
+                path.push_back(dep_ptr);
 
                 std::cerr << "[FATAL] Circular dependency detected:\nTrace: ";
                 for (size_t i = 0; i < path.size(); ++i) {
-                    std::cerr << path[i] << (i == path.size() - 1 ? " [RECURSION!]" : " -> ");
+                    // Здесь предполагается, что у Target есть поле name.
+                    // Если нет — можно выводить адреса или искать имя в targetsMap
+                    std::cerr << path[i]->name << (i == path.size() - 1 ? " [RECURSION!]" : " -> ");
                 }
                 std::cerr << std::endl;
                 return true;
             }
-            // Если еще не проверяли - идем вглубь
-            if (state[dep] == 0) {
-                if (self(dep, path)) return true;
+
+            // Если еще не проверяли этот таргет — идем вглубь
+            if (state[raw_dep_ptr] == 0) {
+                if (self(dep_ptr, path)) return true;
             }
         }
 
-        state[node] = 2; // Полностью проверен, чист
+        state[raw_ptr] = 2; // Пометили как полностью проверенный
         path.pop_back();
         return false;
     };
 
-    std::vector<std::string> path;
-    // Прогоняем каждый таргет
-    for (const auto &name: targetsMap | std::views::keys) {
-        if (state[name] == 0) {
-            if (dfs(name, path)) return true;
+    std::vector<std::shared_ptr<Target>> path;
+    // Прогоняем каждый таргет из карты проекта
+    for (const auto& target_ptr : targetsMap | std::views::values) {
+        if (state[target_ptr.get()] == 0) {
+            if (dfs(target_ptr, path)) return true;
         }
     }
 
     return false;
+}
+
+void Interpreter::buildExecutionPlans() const {
+    const auto& data = project_ctx->project_data;
+    data->execution_plan.clear();
+
+    for (const auto& [name, root_target_ptr] : data->targets) {
+
+        std::unordered_set<Target*> visited; // Используем сырой указатель как уникальный ID объекта
+        std::queue<std::shared_ptr<Target>> current_plan;
+
+        // Рекурсивный DFS по указателям
+        std::function<void(const std::shared_ptr<Target>&)> dfs = [&](const std::shared_ptr<Target>& t) {
+            if (!t || visited.contains(t.get())) return;
+
+            for (const auto& dep_value : t->depends) {
+                if (dep_value.is<std::shared_ptr<Target>>()) {
+                    current_plan.push(dep_value.as<std::shared_ptr<Target>>());
+                }
+            }
+            visited.insert(t.get());
+        };
+
+        dfs(root_target_ptr);
+        data->execution_plan[name] = std::move(current_plan);
+    }
 }

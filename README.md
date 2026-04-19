@@ -6,23 +6,23 @@
 ---
 
 **Key Advantages**
-* Guaranteed Determinism: The system describes a precise, immutable task graph where the configuration block remains the single source of truth.
+* **Guaranteed Determinism**: The system describes a precise, immutable task graph where the configuration block remains the single source of truth.
 
-* No Hidden Side Effects: There is no implicit influence from environment variables or the specific order of function calls.
+* **No Hidden Side Effects**: There is no implicit influence from environment variables or the specific order of function calls.
 
-* Early Error Detection: Thanks to a strict grammar and a robust typing system — utilizing a Value type integrated over std::variant — syntax errors and type mismatches are caught during the initial syntax analysis stage.
+* **Early Error Detection**: Thanks to a strict grammar and a robust typing system — utilizing a _Value_ type integrated over _std::variant_ — syntax errors and type mismatches are caught during the initial syntax analysis stage.
 
-* Zero State Leakage: Each target and project is syntactically isolated, ensuring that variables do not propagate implicitly down the dependency tree.
+* **Zero State Leakage**: Each target and project is syntactically isolated, ensuring that variables do not propagate implicitly down the dependency tree.
 
-* Explicit Data Access: A target only has access to information that has been explicitly passed to it.
+* **Explicit Data Access**: A target only has access to information that has been explicitly passed to it.
 
 **Extensibility and Modularity**
 
 ***PARTIO*** addresses a major "pain point" of legacy systems: the creation of monolithic configuration files that span thousands of lines. ***YACS*** is designed from the ground up with composition in mind:
 
-* External File Support: Complex logic, macros, or project-specific descriptions can be offloaded into separate YACS scripts.
+* **External File Support**: Complex logic, macros, or project-specific descriptions can be offloaded into separate YACS scripts.
 
-* Logic Reusability: This modular approach enables the creation of shared libraries for build scenarios (e.g., standard compiler flags or deployment rules) that are imported only where they are genuinely needed.
+* **Logic Reusability**: This modular approach enables the creation of shared libraries for build scenarios (e.g., standard compiler flags or deployment rules) that are imported only where they are genuinely needed.
 
 **Technical Architecture**
 
@@ -36,7 +36,7 @@ The interpreter is engineered for high-performance lexical analysis and strict t
 * **Type-Safe C++ Integration:**
 	    Built-in language functions are registered through C++ wrappers that feature automatic return type deduction.
 
-**Syntax example**
+**Syntax example**:
 ```cpp
 //This is a single-line comment.
 

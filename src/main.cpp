@@ -7,6 +7,8 @@
 #include "Interpreter.hpp"
 #include <argparse/argparse.hpp>
 
+#include "Builder.hpp"
+
 
 int main(int argc, char *argv[]) {
     argparse::ArgumentParser program("partio", "1.0", argparse::default_arguments::none);
@@ -63,15 +65,15 @@ int main(int argc, char *argv[]) {
         std::exit(1);
     }
 
-    ProjectConfig config;
-    config.arch = program.get<std::string>("--arch");
-    config.build_mode = program.get<std::string>("--build-mode");
-    config.thread_count = program.get<int>("--jobs");
-    config.verbose = program.get<bool>("--verbose");
-    config.target = program.get<std::string>("--target");
+    const auto config = std::make_shared<ProjectConfig>();
+    //ProjectConfig config;
+    config->arch = program.get<std::string>("--arch");
+    config->build_mode = program.get<std::string>("--build-mode");
+    config->thread_count = program.get<int>("--jobs");
+    config->verbose = program.get<bool>("--verbose");
+    config->target = program.get<std::string>("--target");
 
-    auto root_project = std::make_shared<ProjectContext>();
-    root_project->root = std::filesystem::current_path();
+    const auto project_data = std::make_shared<ProjectData>();
 
     std::ifstream stream("build.yacs");
     antlr4::ANTLRInputStream input(stream);
@@ -80,13 +82,15 @@ int main(int argc, char *argv[]) {
     YACSParser parser(&tokens);
 
     auto* tree = parser.project_file(); // Корень твоей грамматики
-    Interpreter visitor(config, root_project);
+    Interpreter visitor(config, project_data);
 
     try {
         visitor.visit(tree);
     } catch (const std::exception& err) {
         std::cerr << "Error: " << err.what() << std::endl;
     }
+
+    Builder worker(config, project_data);
 
     return 0;
 }
