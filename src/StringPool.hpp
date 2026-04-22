@@ -5,24 +5,35 @@
 #include <vector>
 #include <cstring>
 #include <iostream>
+#include <memory>
 
 class StringPool {
     // Упакованная структура для хэш-таблицы (8 байт)
     struct Entry {
-        uint32_t offset; // Смещение начала строки в Арене
-        uint32_t length; // Длина строки
+        std::uint32_t id; // Смещение начала строки в Арене
+        std::uint32_t length; // Длина строки
     };
 
-    std::vector<char> arena;           // Гигантский склад символов
+    // Вместо одного вектора используем список блоков фиксированного размера
+    // Каждый блок — это 64 КБ (или больше), которые никогда не двигаются
+    struct Chunk {
+        std::unique_ptr<char[]> data;
+        size_t used = 0;
+        static constexpr size_t CAPACITY = 64 * 1024; // 64KB
+
+        Chunk() : data(std::make_unique<char[]>(CAPACITY)) {}
+    };
+
+    std::vector<std::unique_ptr<Chunk>> chunks;
     std::vector<Entry> hash_table;     // Наша таблица
-    uint32_t active_entries = 0;
+    std::uint32_t active_entries = 0;
 
     // Пустая строка (ничего не найдено) будет обозначаться как 0
-    const uint32_t EMPTY_SLOT = 0xFFFFFFFF;
+    const std::uint32_t EMPTY_SLOT = 0xFFFFFFFF;
 
     // Классический супербыстрый хэш FNV-1a
-    static uint32_t hash_fnv1a(const std::string_view str) {
-        uint32_t hash = 2166136261u;
+    static std::uint32_t hash_fnv1a(const std::string_view str) {
+        std::uint32_t hash = 2166136261u;
         for (const char c : str) {
             hash ^= static_cast<uint8_t>(c);
             hash *= 16777619u;
@@ -30,85 +41,109 @@ class StringPool {
         return hash;
     }
 
+    static std::uint32_t encode_id(const std::uint32_t chunk_idx, const std::uint32_t offset) {
+        return chunk_idx << 24 | offset & 0xFFFFFF;
+    }
+
+    static void decode_id(const std::uint32_t id, std::uint32_t& chunk_idx, std::uint32_t& offset) {
+        chunk_idx = id >> 24;
+        offset = id & 0xFFFFFF;
+    }
+
     void grow_table() {
-        // Увеличиваем таблицу (всегда степень двойки для быстрого взятия остатка)
-        const size_t new_size = hash_table.empty() ? 4096 : hash_table.size() * 2;
-        std::vector<Entry> new_table(new_size, {EMPTY_SLOT, 0});
+        const size_t new_size = hash_table.size() * 2;
+        const std::vector<Entry> old_table = std::move(hash_table);
 
-        // Перехэшируем старые элементы
-        for (const auto& entry : hash_table) {
-            if (entry.offset != EMPTY_SLOT) {
-                const std::string_view s(&arena[entry.offset], entry.length);
-                uint32_t idx = hash_fnv1a(s) & new_size - 1; // Быстрое деление по модулю
+        hash_table.assign(new_size, {EMPTY_SLOT, 0});
+        const std::uint32_t mask = static_cast<std::uint32_t>(new_size - 1);
 
-                while (new_table[idx].offset != EMPTY_SLOT) {
-                    idx = idx + 1 & new_size - 1;
+        for (const auto& entry : old_table) {
+            if (entry.id != EMPTY_SLOT) {
+                // Чтобы не пересчитывать хэш FNV, мы можем достать строку и хэшировать заново,
+                // либо хранить хэш в Entry. Для простоты — достанем строку.
+                const std::string_view s = get_string(entry.id);
+                const std::uint32_t h = hash_fnv1a(s);
+                std::uint32_t idx = h & mask;
+
+                while (hash_table[idx].id != EMPTY_SLOT) {
+                    idx = idx + 1 & mask;
                 }
-                new_table[idx] = entry;
+                hash_table[idx] = entry;
             }
         }
-        hash_table = std::move(new_table);
     }
 
 public:
-    StringPool() {
-        // Резервируем память, чтобы избежать лишних переаллокаций
-        arena.reserve(1024 * 1024); // 1 МБ символов со старта
-        grow_table();
-
-        // Положим пустую строку под индексом 0 на всякий случай
-        intern("");
+    explicit StringPool(const size_t initial_hash_size = 4096) {
+        hash_table.assign(initial_hash_size, {EMPTY_SLOT, 0});
+        // Сразу создаем первый чанк
+        chunks.push_back(std::make_unique<Chunk>());
     }
 
-    // Главная функция: скармливаешь текст, получаешь ID
-    uint32_t intern(const std::string_view str) {
-        // Если таблица заполнена больше чем на 60%, расширяем
+    std::uint32_t intern(const std::string_view str) {
+        // Проверка заполненности таблицы (60% load factor)
         if (active_entries * 100 / hash_table.size() > 60) {
             grow_table();
         }
 
-        const uint32_t mask = hash_table.size() - 1;
-        uint32_t idx = hash_fnv1a(str) & mask;
+        const std::uint32_t mask = static_cast<std::uint32_t>(hash_table.size() - 1);
+        const std::uint32_t h = hash_fnv1a(str);
+        std::uint32_t idx = h & mask;
 
-        // Ищем место или существующую строку (Linear Probing)
-        while (hash_table[idx].offset != EMPTY_SLOT) {
-            const uint32_t existing_offset = hash_table[idx].offset;
+        while (hash_table[idx].id != EMPTY_SLOT) {
+            const std::uint32_t existing_id = hash_table[idx].id;
 
-            // Если длины совпали, проверяем сами символы
-            if (const uint32_t existing_len = hash_table[idx].length;
-                existing_len == str.length() &&
-                std::memcmp(&arena[existing_offset], str.data(), existing_len) == 0) {
-                // Нашли! Возвращаем её смещение как уникальный ID
-                return existing_offset;
+            if (const std::uint32_t existing_len = hash_table[idx].length; existing_len == str.length()) {
+                std::uint32_t c_idx, c_off;
+                decode_id(existing_id, c_idx, c_off);
+                // Сравниваем символы (пропускаем 4 байта длины)
+                if (const char* existing_data = &chunks[c_idx]->data[c_off + sizeof(std::uint32_t)];
+                        std::memcmp(existing_data, str.data(), existing_len) == 0) {
+                    return existing_id;
+                }
             }
-
-            // Коллизия: идем в следующую ячейку
             idx = idx + 1 & mask;
         }
 
-        // Если мы тут, значит строки нет. Добавляем её!
-        const uint32_t new_offset = static_cast<uint32_t>(arena.size());
-        const uint32_t new_length = static_cast<uint32_t>(str.length());
+        // Добавляем новую строку
+        const size_t needed = str.length() + sizeof(std::uint32_t);
 
-        // Копируем символы в конец Арены
-        arena.insert(arena.end(), str.begin(), str.end());
+        // Проверяем место в текущем чанке (с учетом выравнивания по 4 байта)
+        size_t current_used = chunks.back()->used + 3 & ~3;
+        if (current_used + needed > Chunk::CAPACITY) {
+            chunks.push_back(std::make_unique<Chunk>());
+            current_used = 0;
+        }
 
-        // Записываем в таблицу
-        hash_table[idx] = {new_offset, new_length};
+        Chunk& chunk = *chunks.back();
+        const std::uint32_t new_id = encode_id(static_cast<std::uint32_t>(chunks.size() - 1), static_cast<std::uint32_t>(current_used));
+        const std::uint32_t len = static_cast<std::uint32_t>(str.length());
+
+        // Пишем длину
+        std::memcpy(&chunk.data[current_used], &len, sizeof(std::uint32_t));
+        // Пишем данные
+        std::memcpy(&chunk.data[current_used + sizeof(std::uint32_t)], str.data(), len);
+
+        chunk.used = current_used + needed;
+
+        hash_table[idx] = {new_id, len};
         active_entries++;
 
-        // Возвращаем смещение в Арене как ID
-        // (Оно гарантированно уникально для каждой строки)
-        return new_offset;
+        return new_id;
     }
 
-    // Обратное преобразование: по ID получить строку (нужно для дебага и вывода ошибок)
-    std::string_view get_string(const uint32_t id) const {
-        // ID - это просто смещение в арене, но нам нужно узнать длину.
-        // Чтобы не искать по хэш-таблице, можно использовать небольшую хитрость,
-        // но для простоты здесь предполагается, что лексер сам знает длину,
-        // либо мы можем хранить длину прямо перед строкой в Арене.
-        // Для текущего примера возвращаем указатель (чуть позже допилим структуру ID).
-        return std::string_view(&arena[id]);
+    [[nodiscard]] std::string_view get_string(const std::uint32_t id) const {
+        if (id == EMPTY_SLOT) return "";
+
+        std::uint32_t c_idx, c_off;
+        decode_id(id, c_idx, c_off);
+
+        if (c_idx >= chunks.size()) return "<invalid id>";
+
+        const Chunk& chunk = *chunks[c_idx];
+        std::uint32_t len;
+        std::memcpy(&len, &chunk.data[c_off], sizeof(std::uint32_t));
+
+        return { &chunk.data[c_off + sizeof(std::uint32_t)], len };
     }
 };

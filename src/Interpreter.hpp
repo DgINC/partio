@@ -15,6 +15,7 @@ struct ProjectConfig {
     std::string target;
     int thread_count;
     bool verbose;
+    std::vector<std::filesystem::path> include_paths;
 };
 
 using BuiltinFunc = std::move_only_function<Value(const std::map<std::string, Value>&)>;

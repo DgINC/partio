@@ -1,7 +1,7 @@
 #pragma once
+
 #include <vector>
 #include <cstdint>
-#include <string>
 
 // Виды типов
 enum class TypeKind : uint8_t {
@@ -20,27 +20,26 @@ struct FieldInfo {
 
 // Карточка типа
 struct TypeInfo {
-    TypeKind kind;
-    uint32_t name_id;   // ID имени типа (если есть)
-    uint32_t size;      // Общий размер в байтах
-    uint32_t alignment; // Требование к выравниванию
+    TypeKind kind = TypeKind::Void;
+    uint32_t name_id{};   // ID имени типа (если есть)
+    uint32_t size{};      // Общий размер в байтах
+    uint32_t alignment{}; // Требование к выравниванию
 
     // Заполнено только если kind == Struct
     std::vector<FieldInfo> fields;
 
     // Заполнено только если kind == Pointer
-    uint32_t base_type_id;
+    uint32_t base_type_id{};
 };
 
 class TypeRegistry {
-private:
     std::vector<TypeInfo> types;
 
     // Вспомогательная функция для быстрого выравнивания (Битовая магия!)
     // Выравнивает число 'value' до ближайшего числа, кратного 'align'
     // Работает ТОЛЬКО если 'align' - степень двойки (1, 2, 4, 8...)
-    static uint32_t align_up(uint32_t value, uint32_t align) {
-        return (value + align - 1) & ~(align - 1);
+    static uint32_t align_up(const uint32_t value, const uint32_t align) {
+        return value + align - 1 & ~(align - 1);
     }
 
 public:
@@ -60,15 +59,15 @@ public:
     }
 
     // Получить тип по ID
-    const TypeInfo& get_type(uint32_t id) const {
+    [[nodiscard]] const TypeInfo& get_type(const uint32_t id) const {
         return types[id];
     }
 
     // --- API для Парсера ---
 
     // 1. Создаем пустую карточку структуры и получаем её будущий ID
-    uint32_t begin_struct(uint32_t name_id) {
-        uint32_t id = types.size();
+    uint32_t begin_struct(const uint32_t name_id) {
+        const uint32_t id = types.size();
         TypeInfo info;
         info.kind = TypeKind::Struct;
         info.name_id = name_id;

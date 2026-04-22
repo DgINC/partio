@@ -1,0 +1,10 @@
+project [[
+	name = "Hello World";
+	version = "0.0.1";
+	source_files = ["main.cpp"];
+
+	target exe [[
+		type = executable;
+		sources = $source_files;
+	]]
+]]

@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.10...4.3)
 project(partio)
 
 include(FetchContent)
+include(CTest)
 
 FetchContent_Declare(
         argparse
@@ -60,3 +61,9 @@ target_link_libraries(partio PRIVATE argparse)
 target_link_libraries(partio PRIVATE stduuid)
 target_link_libraries(partio PRIVATE tomlplusplus_tomlplusplus)
 target_link_libraries(partio PRIVATE antlr4_static)
+
+add_test(NAME partio_hello_world COMMAND partio -a x64 -t exe)
+
+set_tests_properties(partio_hello_world PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/tests/projects/cpp/helloworld"
+)

@@ -46,6 +46,10 @@ int main(int argc, char *argv[]) {
         .default_value(false)
         .implicit_value(true);
 
+    program.add_argument("-i", "--include_dir")
+    .append()
+    .help("Set include directory");
+
     program.add_argument("-h", "--help")
     .action([&](const std::string& s) {
         std::cout << program << std::endl;
@@ -72,6 +76,7 @@ int main(int argc, char *argv[]) {
     config->thread_count = program.get<int>("--jobs");
     config->verbose = program.get<bool>("--verbose");
     config->target = program.get<std::string>("--target");
+    config->include_paths = program.get<std::vector<std::filesystem::path>>("--include_dir");
 
     const auto project_data = std::make_shared<ProjectData>();
 
@@ -91,6 +96,7 @@ int main(int argc, char *argv[]) {
     }
 
     Builder worker(config, project_data);
+    worker.build();
 
     return 0;
 }

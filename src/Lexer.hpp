@@ -20,11 +20,11 @@ class Lexer : public ITokenStream {
     uint32_t line = 1;
     uint32_t col = 1;
 
-    const std::weak_ptr<StringPool> pool;
+    const std::shared_ptr<StringPool> pool;
     LexerMode mode = LexerMode::Standard;
 
 public:
-    Lexer(const SourceBuffer* sb, const std::weak_ptr<StringPool>& p)
+    Lexer(const SourceBuffer* sb, const std::shared_ptr<StringPool>& p)
         : buffer(sb->data), cursor(sb->data), end(sb->data + sb->size), pool(p) {}
 
     void set_mode(const LexerMode m) { mode = m; }
@@ -46,6 +46,11 @@ public:
         // Строки "local.h"
         if (c == '"') return lex_string();
 
+        if (c == '\n') {
+            advance();
+            return { TOKEN_NEWLINE, 0, line, col, 1 };
+        }
+
         // Идентификаторы и Ключевые слова
         if (std::isalpha(c) || c == '_') return lex_identifier(start, start_col);
 
@@ -63,9 +68,12 @@ public:
                     return { TOKEN_NEWLINE, 0, line - 1, start_col, 1 };
                 }
                 return next_token(); // В обычном режиме просто скипаем \n
-            case '#': return { TOKEN_HASH, 0, line, start_col, 1 };
+            case '#': mode = LexerMode::Directive;
+                return { TOKEN_HASH, 0, line, start_col, 1 };
             case '{': return { TOKEN_LBRACE, 0, line, start_col, 1 };
             case '}': return { TOKEN_RBRACE, 0, line, start_col, 1 };
+            case '(': return {TOKEN_LPAREN, 0, line, start_col, 1 };
+            case ')': return {TOKEN_RPAREN, 0, line, start_col, 1 };
             case ';': return { TOKEN_SEMICOLON, 0, line, start_col, 1 };
             case '<': return { TOKEN_LESS, 0, line, start_col, 1 };
             case '>': return { TOKEN_GREATER, 0, line, start_col, 1 };
@@ -76,7 +84,7 @@ public:
     }
 
 private:
-    char peek() const { return cursor < end ? *cursor : '\0'; }
+    [[nodiscard]] char peek() const { return cursor < end ? *cursor : '\0'; }
 
     void advance() {
         cursor++;
@@ -89,7 +97,10 @@ private:
                 advance();
             } else if (c == '/' && cursor + 1 < end && cursor[1] == '/') {
                 // Однострочный комментарий
-                while (cursor < end && peek() != '\n') advance();
+                while (cursor < end && peek() != '\n') {
+                    if (mode == LexerMode::Directive) break;
+                    advance();
+                }
             } else {
                 break;
             }
@@ -103,11 +114,7 @@ private:
         const std::string_view text(reinterpret_cast<const char*>(start), cursor - start);
 
         const TokenKind kind = KEYWORDS.lookup(text);
-        uint32_t id = 0;
-        {
-            const auto& p = pool.lock();
-            id = p->intern(text);
-        }
+        const uint32_t id = pool->intern(text);
 
         return { kind, id, line, start_col, static_cast<uint32_t>(text.length()) };
     }
@@ -122,11 +129,8 @@ private:
         if (peek() == '>') advance();
 
         mode = LexerMode::Standard; // Авто-сброс после прочтения пути
-        uint32_t id = 0;
-        {
-            const auto& p = pool.lock();
-            id = p->intern(path);
-        }
+        const uint32_t id = pool->intern(path);
+
         return { TOKEN_SYSTEM_INCLUDE, id, line, start_col, static_cast<uint32_t>(path.length()) + 2 };
     }
 
@@ -139,11 +143,7 @@ private:
         const std::string_view text(reinterpret_cast<const char*>(start), cursor - start);
         if (peek() == '"') advance();
 
-        uint32_t id = 0;
-        {
-            const auto& p = pool.lock();
-            id = p->intern(text);
-        }
+        const uint32_t id = pool->intern(text);
 
         return { TOKEN_STRING, id, line, start_col, static_cast<uint32_t>(text.length()) + 2 };
     }
@@ -151,11 +151,7 @@ private:
     Token lex_number(const uint8_t* start, const uint32_t start_col) {
         while (cursor < end && std::isdigit(peek())) advance();
         const std::string_view text(reinterpret_cast<const char*>(start), cursor - start);
-        uint32_t id = 0;
-        {
-            const auto& p = pool.lock();
-            id = p->intern(text);
-        }
+        const uint32_t id = pool->intern(text);
         return { TOKEN_NUMBER, id, line, start_col, static_cast<uint32_t>(text.length()) };
     }
 };
